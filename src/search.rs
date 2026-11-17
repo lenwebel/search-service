@@ -5,7 +5,8 @@
 //! documents happen to be split between segments. Multi-term queries
 //! (prefix, wildcard, range) are constant-score, as in Lucene.
 //!
-//! Execution: segments are evaluated in parallel. Each keeps only its own
+//! Execution: segments are evaluated in parallel when the server is otherwise
+//! idle, and on one thread when other searches are pending. Each keeps only its own
 //! top `start + rows` candidates, which are then merged. Filter (`fq`) results
 //! are cached per segment as bitsets; segments never change, so cached
 //! filters stay valid across commits and only liveness is applied on top.
@@ -13,12 +14,14 @@
 use crate::query::{Occur, Query};
 use crate::schema::{FieldType, Schema};
 use crate::segment::{Num, NumField, Segment, StrField, TextField, parse_numeric};
+use memchr::memmem;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
@@ -63,6 +66,31 @@ type Matches = Vec<(u32, f32)>;
 /// Corpus-wide IDF per field and term, computed once per request.
 type Idf = HashMap<String, HashMap<String, f32>>;
 
+/// Searches queued or running, counted by [`Pending`].
+static PENDING: AtomicUsize = AtomicUsize::new(0);
+
+/// Marks one search as queued or running for as long as it is held.
+///
+/// While more than one search is pending, each search runs on a single thread.
+/// Splitting a query across threads only pays off when cores would otherwise sit
+/// idle. Under load it adds overhead, and a rayon thread waiting for its own
+/// query's pieces can pick up an unrelated query in the meantime, which stalls
+/// the first query until the second finishes.
+pub struct Pending(());
+
+impl Pending {
+    pub fn enter() -> Self {
+        PENDING.fetch_add(1, AtomicOrdering::Relaxed);
+        Pending(())
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        PENDING.fetch_sub(1, AtomicOrdering::Relaxed);
+    }
+}
+
 pub(crate) struct SegEntry {
     pub name: String,
     pub seg: Arc<Segment>,
@@ -100,7 +128,48 @@ enum SortKey<'a> {
     Missing,
 }
 
+/// Sorts with up to this many fields compare per-segment integer keys.
+const KEYED_SORT_FIELDS: usize = 3;
+
+/// A candidate's sort position within one segment. Comparing keys, then doc
+/// numbers, gives exactly the order `compare_keys` gives for that segment, without
+/// reading strings: string values compare by term ordinal, numbers and scores by
+/// order-preserving bit patterns. Missing values are `u128::MAX`, so they sort
+/// last in either direction.
+type SegKey = [u128; KEYED_SORT_FIELDS];
+
+/// Maps an f64 to a u64 with the same order. -0.0 maps to 0.0, which it equals.
+fn f64_key(x: f64) -> u64 {
+    let bits = if x == 0.0 { 0 } else { x.to_bits() };
+    if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits | 1 << 63
+    }
+}
+
+fn num_key(n: Num) -> u64 {
+    match n {
+        Num::I(i) => (i as u64) ^ 1 << 63,
+        Num::F(f) => f64_key(f),
+    }
+}
+
 impl Accessor<'_> {
+    #[inline]
+    fn key_part(&self, doc: u32, score: f32, desc: bool) -> u128 {
+        let enc = match self {
+            Accessor::Score => Some(f64_key(score as f64)),
+            Accessor::Str(f) => f.and_then(|f| f.first_ord(doc)).map(u64::from),
+            Accessor::Num(f) => f.and_then(|f| f.values(doc).next()).map(num_key),
+        };
+        match enc {
+            None => u128::MAX,
+            Some(e) if desc => (u64::MAX - e) as u128,
+            Some(e) => e as u128,
+        }
+    }
+
     #[inline]
     fn key(&self, c: &Cand) -> SortKey<'_> {
         match self {
@@ -286,44 +355,57 @@ impl Searcher {
         let filter_keys: Vec<String> = req.filters.iter().map(|f| format!("{f:?}")).collect();
         let k = req.start + req.rows;
 
-        let per_segment: Vec<(usize, Vec<Cand>, f32)> = self
-            .segments
-            .par_iter()
-            .enumerate()
-            .map(|(si, e)| {
-                let n = e.seg.doc_count();
-                let filters: Vec<Arc<Vec<u64>>> = req
-                    .filters
-                    .iter()
-                    .zip(&filter_keys)
-                    .map(|(f, key)| {
-                        e.seg
-                            .cached_filter(key, || to_bits(n, &self.eval(&idf, &e.seg, f)))
-                    })
-                    .collect();
-                let mut m: Matches = match (&req.query, filters.first()) {
-                    // Browsing a filtered set: walk the cached bitset directly.
-                    (Query::MatchAll, Some(bits)) => iter_bits(bits).map(|d| (d, 1.0)).collect(),
-                    _ => self.eval(&idf, &e.seg, &req.query),
-                };
-                m.retain(|&(d, _)| e.live[d as usize] && filters.iter().all(|b| test_bit(b, d)));
-                let count = m.len();
-                let max = m.iter().map(|&(_, s)| s).fold(0.0, f32::max);
-                if k == 0 {
-                    return (count, vec![], max);
-                }
+        let per_segment_search = |(si, e): (usize, &SegEntry)| {
+            let n = e.seg.doc_count();
+            let filters: Vec<Arc<Vec<u64>>> = req
+                .filters
+                .iter()
+                .zip(&filter_keys)
+                .map(|(f, key)| {
+                    e.seg
+                        .cached_filter(key, || to_bits(n, &self.eval(&idf, &e.seg, f)))
+                })
+                .collect();
+            let mut m: Matches = match (&req.query, filters.first()) {
+                // Browsing a filtered set: walk the cached bitset directly.
+                (Query::MatchAll, Some(bits)) => iter_bits(bits).map(|d| (d, 1.0)).collect(),
+                _ => self.eval(&idf, &e.seg, &req.query),
+            };
+            m.retain(|&(d, _)| e.live[d as usize] && filters.iter().all(|b| test_bit(b, d)));
+            let count = m.len();
+            let max = m.iter().map(|&(_, s)| s).fold(0.0, f32::max);
+            if k == 0 {
+                return (count, vec![], max);
+            }
+            let seg = si as u32;
+            let cands = if specs.len() <= KEYED_SORT_FIELDS {
+                keyed_top_k(&accessors[si], &specs, m, k)
+                    .map(|(doc, score)| Cand { score, seg, doc })
+                    .collect()
+            } else {
                 let mut cands: Vec<Cand> = m
                     .into_iter()
-                    .map(|(doc, score)| Cand {
-                        score,
-                        seg: si as u32,
-                        doc,
-                    })
+                    .map(|(doc, score)| Cand { score, seg, doc })
                     .collect();
                 top_k(&mut cands, k, cmp);
-                (count, cands, max)
-            })
-            .collect();
+                cands
+            };
+            (count, cands, max)
+        };
+        let per_segment: Vec<(usize, Vec<Cand>, f32)> =
+            if PENDING.load(AtomicOrdering::Relaxed) <= 1 {
+                self.segments
+                    .par_iter()
+                    .enumerate()
+                    .map(per_segment_search)
+                    .collect()
+            } else {
+                self.segments
+                    .iter()
+                    .enumerate()
+                    .map(per_segment_search)
+                    .collect()
+            };
 
         let num_found = per_segment.iter().map(|p| p.0).sum();
         let max_score = per_segment.iter().map(|p| p.2).fold(0.0, f32::max);
@@ -652,12 +734,13 @@ impl Searcher {
             };
         }
         let literal_prefix = &pattern[..pattern.find(['*', '?']).unwrap_or(pattern.len())];
+        let glob = Glob::new(pattern);
         self.eval_terms_matching(
             seg,
             field,
             Bound::Included(literal_prefix),
             |t| !t.starts_with(literal_prefix),
-            |t| glob(pattern, t),
+            |t| glob.matches(t),
         )
     }
 
@@ -706,6 +789,35 @@ impl Searcher {
         };
         self.eval_terms_matching(seg, field, from, |t| !below(t), |_| true)
     }
+}
+
+/// The `k` best matches of one segment (unordered), using a bounded heap so
+/// memory stays at `k` however many documents match.
+fn keyed_top_k(
+    accessors: &[Accessor<'_>],
+    specs: &[(FieldType, &str, bool)],
+    matches: Matches,
+    k: usize,
+) -> impl Iterator<Item = (u32, f32)> {
+    use std::collections::BinaryHeap;
+    // Max-heap: the top is the worst candidate kept so far.
+    let mut heap: BinaryHeap<(SegKey, u32, u32)> = BinaryHeap::with_capacity(k + 1);
+    for (doc, score) in matches {
+        let mut key: SegKey = [0; KEYED_SORT_FIELDS];
+        for (part, (acc, (_, _, desc))) in key.iter_mut().zip(accessors.iter().zip(specs)) {
+            *part = acc.key_part(doc, score, *desc);
+        }
+        // Docs arrive in ascending order, so an equal key loses the tie, as it
+        // does in `compare_keys`.
+        if heap.len() < k {
+            heap.push((key, doc, score.to_bits()));
+        } else if heap.peek().is_some_and(|top| (key, doc) < (top.0, top.1)) {
+            heap.pop();
+            heap.push((key, doc, score.to_bits()));
+        }
+    }
+    heap.into_iter()
+        .map(|(_, doc, bits)| (doc, f32::from_bits(bits)))
 }
 
 /// Keeps the `k` best candidates (unordered) in linear time.
@@ -790,46 +902,92 @@ fn compare_keys(a: &SortKey<'_>, b: &SortKey<'_>, desc: bool) -> Ordering {
     if desc { o.reverse() } else { o }
 }
 
+/// A wildcard pattern compiled once per segment scan, so matching it against
+/// each term allocates nothing and doesn't rebuild substring searchers.
 /// `*` matches any run of characters, `?` exactly one.
-fn glob(pattern: &str, text: &str) -> bool {
-    if !pattern.contains('?') {
-        // Common case: literal pieces separated by `*`, matched without allocating.
-        let mut pieces = pattern.split('*');
-        let first = pieces.next().unwrap_or("");
-        let Some(mut rest) = text.strip_prefix(first) else {
-            return false;
+enum Glob {
+    /// No `?` (the common case): literal pieces separated by `*`.
+    Pieces {
+        first: String,
+        middle: Vec<memmem::Finder<'static>>,
+        /// `None` when the pattern has no `*` at all.
+        last: Option<String>,
+    },
+    Chars(Vec<char>),
+}
+
+impl Glob {
+    fn new(pattern: &str) -> Self {
+        if pattern.contains('?') {
+            return Glob::Chars(pattern.chars().collect());
+        }
+        let mut pieces: Vec<&str> = pattern.split('*').collect();
+        let first = pieces.remove(0).to_string();
+        let last = if pieces.is_empty() {
+            None
+        } else {
+            pieces.pop().map(str::to_string)
         };
-        let pieces: Vec<&str> = pieces.collect();
-        let Some((last, middle)) = pieces.split_last() else {
-            return rest.is_empty();
-        };
-        for piece in middle {
-            match rest.find(piece) {
-                Some(i) => rest = &rest[i + piece.len()..],
-                None => return false,
+        let middle = pieces
+            .iter()
+            .filter(|p| !p.is_empty())
+            .map(|p| memmem::Finder::new(p.as_bytes()).into_owned())
+            .collect();
+        Glob::Pieces {
+            first,
+            middle,
+            last,
+        }
+    }
+
+    fn matches(&self, text: &str) -> bool {
+        match self {
+            Glob::Pieces {
+                first,
+                middle,
+                last,
+            } => {
+                let Some(rest) = text.strip_prefix(first.as_str()) else {
+                    return false;
+                };
+                let Some(last) = last else {
+                    return rest.is_empty();
+                };
+                // Taking each middle piece at its leftmost match leaves the most
+                // room for the rest. Byte search is safe on UTF-8: a match of a
+                // valid UTF-8 needle always starts on a character boundary.
+                let mut rest = rest.as_bytes();
+                for finder in middle {
+                    match finder.find(rest) {
+                        Some(i) => rest = &rest[i + finder.needle().len()..],
+                        None => return false,
+                    }
+                }
+                rest.ends_with(last.as_bytes())
+            }
+            Glob::Chars(p) => {
+                let t: Vec<char> = text.chars().collect();
+                let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+                while ti < t.len() {
+                    if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+                        pi += 1;
+                        ti += 1;
+                    } else if pi < p.len() && p[pi] == '*' {
+                        star = Some(pi);
+                        mark = ti;
+                        pi += 1;
+                    } else if let Some(s) = star {
+                        pi = s + 1;
+                        mark += 1;
+                        ti = mark;
+                    } else {
+                        return false;
+                    }
+                }
+                p[pi..].iter().all(|&c| c == '*')
             }
         }
-        return rest.ends_with(last);
     }
-    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
-    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|&c| c == '*')
 }
 
 fn intersect(a: &Matches, b: &Matches) -> Matches {

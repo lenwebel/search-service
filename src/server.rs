@@ -6,6 +6,7 @@
 
 use crate::index::{Batch, Index, IndexError, SearchRequest, SortField};
 use crate::query::{ParseOptions, Query, parse};
+use crate::search::Pending;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -187,7 +188,12 @@ async fn select(
         .map(str::trim)
         .filter(|f| !f.is_empty())
         .collect();
-    let stored_fl: Vec<&str> = fl.iter().copied().filter(|f| *f != "score").collect();
+    let stored_fl: Vec<String> = fl
+        .iter()
+        .filter(|f| **f != "score")
+        .map(|f| f.to_string())
+        .collect();
+    let all_stored = fl.is_empty() || fl.contains(&"*");
     let searcher = state.index.cached_searcher().await?;
     let request = SearchRequest {
         query,
@@ -196,12 +202,23 @@ async fn select(
         start,
         rows,
     };
-    let wanted = (!fl.is_empty() && !fl.contains(&"*")).then_some(stored_fl.as_slice());
-    let result = searcher
-        .search_fields(&request, wanted)
+    // Searching is CPU-bound, so it runs on the rayon pool. Running it inline
+    // would block an HTTP worker thread, and requests would queue behind it
+    // before their QTime even started.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let pending = Pending::enter();
+    rayon::spawn(move || {
+        let _pending = pending;
+        let wanted: Vec<&str> = stored_fl.iter().map(String::as_str).collect();
+        let wanted = (!all_stored).then_some(wanted.as_slice());
+        let _ = tx.send(searcher.search_fields(&request, wanted));
+    });
+    let result = rx
+        .await
+        .map_err(|_| SolrError(StatusCode::INTERNAL_SERVER_ERROR, "search panicked".into()))?
         .map_err(bad_request)?;
 
-    let all_fields = fl.is_empty() || fl.contains(&"*");
+    let all_fields = all_stored;
     let with_score = fl.contains(&"score");
     let docs: Vec<Value> = result
         .docs

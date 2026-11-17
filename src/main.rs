@@ -61,6 +61,11 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
+// Queries allocate many short-lived vectors across threads; mimalloc handles
+// that with far less contention than the system allocator.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let args: Vec<String> = std::env::args().skip(1).collect();

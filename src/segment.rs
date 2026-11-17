@@ -667,9 +667,16 @@ impl StrField {
     /// The document's first value, used for sorting and existence checks.
     #[inline]
     pub fn first(&self, doc: u32) -> Option<&str> {
+        self.first_ord(doc).map(|ord| self.terms.get(ord))
+    }
+
+    /// The ordinal of the document's first value. Terms are stored sorted, so
+    /// within one segment ordinals compare exactly as the strings do.
+    #[inline]
+    pub fn first_ord(&self, doc: u32) -> Option<u32> {
         match self.b.u32(self.first + 4 * doc as usize) {
             NO_ORD => None,
-            ord => Some(self.terms.get(ord)),
+            ord => Some(ord),
         }
     }
 }

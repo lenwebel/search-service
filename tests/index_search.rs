@@ -14,6 +14,7 @@ fn schema() -> Schema {
         .with_field("name_str", FieldType::Str, false)
         .with_field("set", FieldType::Text, false)
         .with_field("hitpoints", FieldType::Long, false)
+        .with_field("price", FieldType::Double, false)
         .with_field("released", FieldType::Date, false)
         .with_field("search_all", FieldType::Text, true)
         .with_copy("name", "name_str")
@@ -440,4 +441,257 @@ async fn cached_searcher_avoids_storage_until_refreshed() {
         "refresh picks up other writers"
     );
     assert_eq!(reader.cached_searcher().await.unwrap().num_docs(), 4);
+}
+
+#[tokio::test]
+async fn searches_under_load_return_the_same_results_as_a_lone_search() {
+    let index = mem_index();
+    for batch in 0..6 {
+        let docs = (0..40).map(|i| {
+            json!({
+                "id": format!("{batch}-{i}"),
+                "name": format!("card {} {}", ["fire", "water", "grass"][i % 3], i % 7),
+                "set": format!("set {}", batch % 2),
+                "hitpoints": (i * 10) % 170,
+            })
+        });
+        let mut b = Batch::default();
+        for d in docs {
+            b.push_add(d);
+        }
+        index.commit(b).await.unwrap();
+    }
+    let searcher = index.searcher().await.unwrap();
+    let requests: Vec<SearchRequest> = vec![
+        req("fire OR water"),
+        req("name:\"card fire\""),
+        SearchRequest {
+            sort: vec![SortField {
+                field: "hitpoints".into(),
+                descending: true,
+            }],
+            ..req("*:*")
+        },
+        SearchRequest {
+            filters: vec![q("set:1")],
+            sort: vec![SortField {
+                field: "name_str".into(),
+                descending: false,
+            }],
+            ..req("grass")
+        },
+    ];
+    let summarise = |r: &SearchRequest| {
+        let res = searcher.search(r).unwrap();
+        let hits: Vec<(String, u32)> = res
+            .docs
+            .iter()
+            .map(|h| (h.doc["id"].as_str().unwrap().to_string(), h.score.to_bits()))
+            .collect();
+        (res.num_found, hits)
+    };
+    let alone: Vec<_> = requests.iter().map(summarise).collect();
+
+    // Many searches in flight at once, as on a busy server.
+    let _load: Vec<_> = (0..8)
+        .map(|_| search_service::search::Pending::enter())
+        .collect();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| s.spawn(|| requests.iter().map(summarise).collect::<Vec<_>>()))
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), alone);
+        }
+    });
+}
+
+#[tokio::test]
+async fn sorted_results_match_a_reference_sort_across_segments() {
+    // Values chosen to hit the edge cases: missing values, duplicates (ties
+    // fall back to index order), negative numbers, and -0.0 against 0.0.
+    let names = [
+        Some("b"),
+        None,
+        Some("a"),
+        Some("c"),
+        Some("a"),
+        None,
+        Some("B"),
+    ];
+    let hps = [
+        Some(30),
+        Some(-5),
+        None,
+        Some(30),
+        Some(0),
+        Some(-5),
+        None,
+        Some(120),
+    ];
+    let prices = [
+        Some(1.5),
+        Some(-0.0),
+        Some(0.0),
+        None,
+        Some(-2.25),
+        Some(1.5),
+    ];
+    let mut docs = vec![];
+    for i in 0..60 {
+        let mut d = serde_json::Map::new();
+        d.insert("id".into(), json!(format!("d{i:02}")));
+        if let Some(n) = names[i % names.len()] {
+            d.insert("name_str".into(), json!(n));
+        }
+        if let Some(h) = hps[i % hps.len()] {
+            d.insert("hitpoints".into(), json!(h));
+        }
+        if let Some(p) = prices[i % prices.len()] {
+            d.insert("price".into(), json!(p));
+        }
+        docs.push(serde_json::Value::Object(d));
+    }
+
+    // Missing values sort last in both directions; ties keep index order.
+    let reference = |specs: &[(&str, bool)]| -> Vec<String> {
+        let mut order: Vec<usize> = (0..docs.len()).collect();
+        order.sort_by(|&a, &b| {
+            for &(field, desc) in specs {
+                let (va, vb) = (&docs[a][field], &docs[b][field]);
+                let o = match (va.is_null(), vb.is_null()) {
+                    (true, true) => std::cmp::Ordering::Equal,
+                    (true, false) => return std::cmp::Ordering::Greater,
+                    (false, true) => return std::cmp::Ordering::Less,
+                    _ => match (va.as_str(), vb.as_str()) {
+                        (Some(x), Some(y)) => x.cmp(y),
+                        _ => va
+                            .as_f64()
+                            .unwrap()
+                            .partial_cmp(&vb.as_f64().unwrap())
+                            .unwrap(),
+                    },
+                };
+                let o = if desc { o.reverse() } else { o };
+                if o.is_ne() {
+                    return o;
+                }
+            }
+            a.cmp(&b)
+        });
+        order
+            .iter()
+            .map(|&i| docs[i]["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let cases: Vec<Vec<(&str, bool)>> = vec![
+        vec![("name_str", false)],
+        vec![("name_str", true)],
+        vec![("hitpoints", true), ("name_str", false)],
+        vec![("price", false)],
+        vec![("price", true), ("hitpoints", false), ("name_str", true)],
+    ];
+    // Many small segments, and one segment where a page cut can fall between
+    // equal values.
+    for segment_size in [13, 60] {
+        let index = mem_index();
+        for chunk in docs.chunks(segment_size) {
+            let mut b = Batch::default();
+            for d in chunk {
+                b.push_add(d.clone());
+            }
+            index.commit(b).await.unwrap();
+        }
+        for specs in &cases {
+            let expected = reference(specs);
+            for (start, rows) in [(0, 60), (0, 7), (11, 9), (0, 3), (10, 3), (10, 5)] {
+                let r = SearchRequest {
+                    sort: specs
+                        .iter()
+                        .map(|&(f, d)| SortField {
+                            field: f.into(),
+                            descending: d,
+                        })
+                        .collect(),
+                    start,
+                    rows,
+                    ..req("*:*")
+                };
+                assert_eq!(
+                    ids(&index, r).await,
+                    expected[start..start + rows].to_vec(),
+                    "sort {specs:?}, start {start}, rows {rows}, segments of {segment_size}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn wildcards_match_exactly_what_a_reference_matcher_matches() {
+    // Brute-force glob over chars: `*` is any run, `?` exactly one char.
+    fn reference(p: &[char], t: &[char]) -> bool {
+        match (p.first(), t.first()) {
+            (None, _) => t.is_empty(),
+            (Some('*'), _) => reference(&p[1..], t) || (!t.is_empty() && reference(p, &t[1..])),
+            (Some('?'), Some(_)) => reference(&p[1..], &t[1..]),
+            (Some(c), Some(d)) if c == d => reference(&p[1..], &t[1..]),
+            _ => false,
+        }
+    }
+    let values = [
+        "pikachu",
+        "charizard",
+        "aaa",
+        "aab",
+        "baa",
+        "abab",
+        "ébène",
+        "naïve",
+        "zz",
+        "a",
+        "chachacha",
+        "ab",
+    ];
+    let index = mem_index();
+    let mut b = Batch::default();
+    for (i, v) in values.iter().enumerate() {
+        b.push_add(json!({"id": format!("w{i}"), "name_str": v}));
+    }
+    index.commit(b).await.unwrap();
+    let patterns = [
+        "*a*",
+        "*ar*d",
+        "c*z*d",
+        "*aa*a",
+        "a?a",
+        "?a?",
+        "*é*",
+        "?bène",
+        "a**b",
+        "*u",
+        "*ch*",
+        "*cha*cha",
+        "*b*b*",
+        "*ab",
+        "?",
+        "??",
+        "*?",
+        "na?ve",
+        "*cha*a*cha*",
+    ];
+    for p in patterns {
+        let pc: Vec<char> = p.chars().collect();
+        let mut expected: Vec<String> = values
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| reference(&pc, &v.chars().collect::<Vec<_>>()))
+            .map(|(i, _)| format!("w{i}"))
+            .collect();
+        let mut got = ids(&index, req(&format!("name_str:{p}"))).await;
+        expected.sort();
+        got.sort();
+        assert_eq!(got, expected, "pattern {p}");
+    }
 }
