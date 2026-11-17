@@ -184,3 +184,24 @@ async fn update_accepts_bulk_bodies_larger_than_two_megabytes() {
     let (_, body) = call(&app, "GET", "/solr/cards/select?q=*:*&rows=0", None).await;
     assert_eq!(body["response"]["numFound"], 5000);
 }
+
+#[tokio::test]
+async fn root_serves_the_browser_page() {
+    let res = app()
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(
+        res.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        html.contains("/select"),
+        "page should query the select endpoint"
+    );
+}

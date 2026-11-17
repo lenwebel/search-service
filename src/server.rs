@@ -9,7 +9,7 @@ use crate::query::{ParseOptions, Query, parse};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, RawQuery, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Map, Value, json};
@@ -27,11 +27,20 @@ pub struct AppState {
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/", get(browser))
         .route("/solr/{core}/select", get(select))
         .route("/solr/{core}/update", post(update))
         .route("/solr/{core}/update/json/docs", post(update))
         .layer(DefaultBodyLimit::max(MAX_UPDATE_BYTES))
         .with_state(state)
+}
+
+/// A plain HTML/CSS/JS page for browsing the index through `/select`.
+const BROWSER_PAGE: &str = include_str!("../ui/index.html");
+
+async fn browser(State(state): State<Arc<AppState>>) -> Html<String> {
+    let core = Value::String(state.core.clone()).to_string();
+    Html(BROWSER_PAGE.replace("\"{{CORE}}\"", &core))
 }
 
 struct SolrError(StatusCode, String);
