@@ -1,0 +1,366 @@
+{
+    "responseHeader": {
+        "status": 0,
+        "QTime": 1
+    },
+    "copyFields": [
+        {
+            "source": "abilityDescription1",
+            "dest": "abilityDescription1_str"
+        },
+        {
+            "source": "abilityDescription2",
+            "dest": "abilityDescription2_str"
+        },
+        {
+            "source": "abilityDescription3",
+            "dest": "abilityDescription3_str"
+        },
+        {
+            "source": "abilityDescription4",
+            "dest": "abilityDescription4_str"
+        },
+        {
+            "source": "brand",
+            "dest": "search_all"
+        },
+        {
+            "source": "cardNumberValue",
+            "dest": "cardNumberValue_str"
+        },
+        {
+            "source": "cardNumberValue2",
+            "dest": "cardNumberValue2_str"
+        },
+        {
+            "source": "cardType",
+            "dest": "cardType_str"
+        },
+        {
+            "source": "elementType",
+            "dest": "elementType_str"
+        },
+        {
+            "source": "elementType_2",
+            "dest": "elementType_2_str"
+        },
+        {
+            "source": "evolutionStage",
+            "dest": "evolutionStage_str"
+        },
+        {
+            "source": "hitpoints",
+            "dest": "hitpoints_str"
+        },
+        {
+            "source": "illustrator",
+            "dest": "illustrator_str"
+        },
+        {
+            "source": "illustrator",
+            "dest": "search_all"
+        },
+        {
+            "source": "imageSrc",
+            "dest": "imageSrc_str"
+        },
+        {
+            "source": "name",
+            "dest": "name_str"
+        },
+        {
+            "source": "name",
+            "dest": "search_all"
+        },
+        {
+            "source": "number",
+            "dest": "number_str"
+        },
+        {
+            "source": "number",
+            "dest": "search_all"
+        },
+        {
+            "source": "pokemon",
+            "dest": "pokemon_str"
+        },
+        {
+            "source": "pokemonStyle",
+            "dest": "pokemonStyle_str"
+        },
+        {
+            "source": "pokemonTag",
+            "dest": "pokemonTag_str"
+        },
+        {
+            "source": "pokemonTag2",
+            "dest": "pokemonTag2_str"
+        },
+        {
+            "source": "rarity",
+            "dest": "rarity_str"
+        },
+        {
+            "source": "releaseDate",
+            "dest": "releaseDate_str"
+        },
+        {
+            "source": "resistAmount",
+            "dest": "resistAmount_str"
+        },
+        {
+            "source": "resistType",
+            "dest": "resistType_str"
+        },
+        {
+            "source": "series",
+            "dest": "search_all"
+        },
+        {
+            "source": "series",
+            "dest": "series_str"
+        },
+        {
+            "source": "set",
+            "dest": "search_all"
+        },
+        {
+            "source": "set",
+            "dest": "set_str"
+        },
+        {
+            "source": "setCode",
+            "dest": "setCode_str"
+        },
+        {
+            "source": "setCode1",
+            "dest": "setCode1_str"
+        },
+        {
+            "source": "setCode2",
+            "dest": "setCode2_str"
+        },
+        {
+            "source": "setCode3",
+            "dest": "setCode3_str"
+        },
+        {
+            "source": "setCode4",
+            "dest": "setCode4_str"
+        },
+        {
+            "source": "subRarity",
+            "dest": "subRarity_str"
+        },
+        {
+            "source": "weaknessAmount",
+            "dest": "weaknessAmount_str"
+        },
+        {
+            "source": "weaknessType",
+            "dest": "weaknessType_str"
+        },
+        {
+            "source": "webScraperOrder",
+            "dest": "webScraperOrder_str"
+        },
+        {
+            "source": "webScraperStartUrl",
+            "dest": "webScraperStartUrl_str"
+        },
+        {
+            "source": "_self",
+            "dest": "_self_str",
+            "maxChars": 256
+        },
+        {
+            "source": "_etag",
+            "dest": "_etag_str",
+            "maxChars": 256
+        },
+        {
+            "source": "string",
+            "dest": "string_str"
+        },
+        {
+            "source": "abilityName2",
+            "dest": "abilityName2_str",
+            "maxChars": 256
+        },
+        {
+            "source": "abilityName1",
+            "dest": "abilityName1_str",
+            "maxChars": 256
+        },
+        {
+            "source": "Pokemon",
+            "dest": "Pokemon_str",
+            "maxChars": 256
+        },
+        {
+            "source": "reverseTag",
+            "dest": "reverseTag_str",
+            "maxChars": 256
+        },
+        {
+            "source": "abilityName3",
+            "dest": "abilityName3_str",
+            "maxChars": 256
+        },
+        {
+            "source": "abilityName4",
+            "dest": "abilityName4_str",
+            "maxChars": 256
+        },
+        {
+            "source": "elementType2",
+            "dest": "elementType2_str",
+            "maxChars": 256
+        },
+        {
+            "source": "pokemoStyle",
+            "dest": "pokemoStyle_str",
+            "maxChars": 256
+        },
+        {
+            "source": "pokemoTag",
+            "dest": "pokemoTag_str",
+            "maxChars": 256
+        },
+        {
+            "source": "productKey_1",
+            "dest": "productKey_1_str",
+            "maxChars": 256
+        },
+        {
+            "source": "productKey",
+            "dest": "productKey_str",
+            "maxChars": 256
+        },
+        {
+            "source": "subHeading2",
+            "dest": "subHeading2_str",
+            "maxChars": 256
+        },
+        {
+            "source": "imageUrl",
+            "dest": "imageUrl_str",
+            "maxChars": 256
+        },
+        {
+            "source": "setId",
+            "dest": "setId_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo",
+            "dest": "cardInfo_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo2",
+            "dest": "cardInfo2_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo3",
+            "dest": "cardInfo3_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo4",
+            "dest": "cardInfo4_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo5",
+            "dest": "cardInfo5_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo7",
+            "dest": "cardInfo7_str",
+            "maxChars": 256
+        },
+        {
+            "source": "cardInfo8",
+            "dest": "cardInfo8_str",
+            "maxChars": 256
+        },
+        {
+            "source": "subHeading",
+            "dest": "subHeading_str",
+            "maxChars": 256
+        },
+        {
+            "source": "heading",
+            "dest": "heading_str",
+            "maxChars": 256
+        },
+        {
+            "source": "footer",
+            "dest": "footer_str",
+            "maxChars": 256
+        },
+        {
+            "source": "footer2",
+            "dest": "footer2_str",
+            "maxChars": 256
+        },
+        {
+            "source": "title",
+            "dest": "title_str",
+            "maxChars": 256
+        },
+        {
+            "source": "productType",
+            "dest": "productType_str",
+            "maxChars": 256
+        },
+        {
+            "source": "brand",
+            "dest": "brand_str",
+            "maxChars": 256
+        },
+        {
+            "source": "language",
+            "dest": "language_str",
+            "maxChars": 256
+        },
+        {
+            "source": "Icon2",
+            "dest": "Icon2_str",
+            "maxChars": 256
+        },
+        {
+            "source": "Icon1",
+            "dest": "Icon1_str",
+            "maxChars": 256
+        },
+        {
+            "source": "Code",
+            "dest": "Code_str",
+            "maxChars": 256
+        },
+        {
+            "source": "sealedType",
+            "dest": "sealedType_str",
+            "maxChars": 256
+        },
+        {
+            "source": "subTypeName",
+            "dest": "subTypeName_str",
+            "maxChars": 256
+        },
+        {
+            "source": "productId",
+            "dest": "productId_str",
+            "maxChars": 256
+        },
+        {
+            "source": "delete",
+            "dest": "delete_str",
+            "maxChars": 256
+        }
+    ]
+}
