@@ -808,10 +808,24 @@ impl Segment {
     /// The cached bitset for a filter, computing it on first use. Segments are
     /// immutable, so an entry never goes stale; deletions are applied separately.
     pub fn cached_filter(&self, key: &str, compute: impl FnOnce() -> Vec<u64>) -> Arc<Vec<u64>> {
+        self.cached_filter_if(key, compute, |_| true)
+    }
+
+    /// Like [`cached_filter`](Self::cached_filter), but only keeps the result
+    /// when `keep` says it is worth a cache slot.
+    pub fn cached_filter_if(
+        &self,
+        key: &str,
+        compute: impl FnOnce() -> Vec<u64>,
+        keep: impl FnOnce(&[u64]) -> bool,
+    ) -> Arc<Vec<u64>> {
         if let Some(bits) = self.filters.lock().unwrap().map.get(key) {
             return bits.clone();
         }
         let bits = Arc::new(compute());
+        if !keep(&bits) {
+            return bits;
+        }
         let mut cache = self.filters.lock().unwrap();
         if !cache.map.contains_key(key) {
             if cache.order.len() >= FILTER_CACHE_ENTRIES

@@ -695,3 +695,252 @@ async fn wildcards_match_exactly_what_a_reference_matcher_matches() {
         assert_eq!(got, expected, "pattern {p}");
     }
 }
+
+#[tokio::test]
+async fn constant_score_booleans_match_a_reference_exactly() {
+    // Weights like 0.1 and 0.2 make float summation order visible, so scores
+    // must be added in clause order: required clauses, then optional ones.
+    struct Clause {
+        occur: char,
+        query: &'static str,
+        weight: f32,
+        matches: fn(&serde_json::Value) -> bool,
+    }
+    let docs: Vec<serde_json::Value> = (0..90)
+        .map(|i| {
+            let name = ["a", "b", "c", "a"][i % 4];
+            let set = ["alpha beta", "beta gamma", "gamma"][i % 3];
+            json!({"id": format!("c{i:02}"), "name_str": name, "set": set, "hitpoints": (i * 7) % 60})
+        })
+        .collect();
+    let index = mem_index();
+    for chunk in docs.chunks(25) {
+        let mut b = Batch::default();
+        for d in chunk {
+            b.push_add(d.clone());
+        }
+        index.commit(b).await.unwrap();
+    }
+    let deleted = ["c03", "c40", "c41", "c77"];
+    let mut b = Batch::default();
+    for id in deleted {
+        b.push_delete(id);
+    }
+    index.commit(b).await.unwrap();
+
+    let cases: Vec<(Vec<Clause>, Option<&str>)> = vec![
+        (
+            vec![
+                Clause {
+                    occur: ' ',
+                    query: "name_str:a",
+                    weight: 0.1,
+                    matches: |v| v["name_str"] == "a",
+                },
+                Clause {
+                    occur: ' ',
+                    query: "set:beta",
+                    weight: 0.2,
+                    matches: |v| v["set"].as_str().unwrap().contains("beta"),
+                },
+                Clause {
+                    occur: ' ',
+                    query: "hitpoints:[10 TO 30]",
+                    weight: 0.3,
+                    matches: |v| (10..=30).contains(&v["hitpoints"].as_i64().unwrap()),
+                },
+            ],
+            None,
+        ),
+        (
+            vec![
+                Clause {
+                    occur: '+',
+                    query: "set:beta",
+                    weight: 0.7,
+                    matches: |v| v["set"].as_str().unwrap().contains("beta"),
+                },
+                Clause {
+                    occur: ' ',
+                    query: "name_str:a",
+                    weight: 0.1,
+                    matches: |v| v["name_str"] == "a",
+                },
+                Clause {
+                    occur: ' ',
+                    query: "name_str:b",
+                    weight: 0.2,
+                    matches: |v| v["name_str"] == "b",
+                },
+                Clause {
+                    occur: '-',
+                    query: "hitpoints:28",
+                    weight: 1.0,
+                    matches: |v| v["hitpoints"] == 28,
+                },
+            ],
+            None,
+        ),
+        (
+            vec![
+                Clause {
+                    occur: '+',
+                    query: "set:gamma",
+                    weight: 0.3,
+                    matches: |v| v["set"].as_str().unwrap().contains("gamma"),
+                },
+                Clause {
+                    occur: '+',
+                    query: "name_str:c",
+                    weight: 0.1,
+                    matches: |v| v["name_str"] == "c",
+                },
+                Clause {
+                    occur: '+',
+                    query: "hitpoints:[0 TO 40]",
+                    weight: 0.2,
+                    matches: |v| v["hitpoints"].as_i64().unwrap() <= 40,
+                },
+            ],
+            None,
+        ),
+        (
+            vec![Clause {
+                occur: '-',
+                query: "name_str:a",
+                weight: 1.0,
+                matches: |v| v["name_str"] == "a",
+            }],
+            None,
+        ),
+        (
+            vec![
+                Clause {
+                    occur: ' ',
+                    query: "name_str:zzz",
+                    weight: 5.0,
+                    matches: |_| false,
+                },
+                Clause {
+                    occur: ' ',
+                    query: "set:nothing",
+                    weight: 1.0,
+                    matches: |_| false,
+                },
+            ],
+            None,
+        ),
+        (
+            vec![
+                Clause {
+                    occur: ' ',
+                    query: "name_str:a",
+                    weight: 0.1,
+                    matches: |v| v["name_str"] == "a",
+                },
+                Clause {
+                    occur: ' ',
+                    query: "name_str:b",
+                    weight: 0.2,
+                    matches: |v| v["name_str"] == "b",
+                },
+                Clause {
+                    occur: ' ',
+                    query: "set:alpha",
+                    weight: 0.3,
+                    matches: |v| v["set"].as_str().unwrap().contains("alpha"),
+                },
+            ],
+            Some("set:gamma"),
+        ),
+    ];
+    let searcher = index.searcher().await.unwrap();
+    for (clauses, filter) in &cases {
+        let query: String = clauses
+            .iter()
+            .map(|c| {
+                let prefix = if c.occur == ' ' {
+                    String::new()
+                } else {
+                    c.occur.to_string()
+                };
+                format!("{prefix}({})^={}", c.query, c.weight)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Reference: live docs matching every required clause (or, with none,
+        // any optional clause; with neither, every doc), and no prohibited one.
+        let mut expected: Vec<(usize, f32)> = vec![];
+        for (i, d) in docs.iter().enumerate() {
+            if deleted.contains(&d["id"].as_str().unwrap()) {
+                continue;
+            }
+            if let Some(f) = filter {
+                let term = f.split(':').nth(1).unwrap();
+                if !d["set"].as_str().unwrap().split(' ').any(|w| w == term) {
+                    continue;
+                }
+            }
+            let has_must = clauses.iter().any(|c| c.occur == '+');
+            let has_should = clauses.iter().any(|c| c.occur == ' ');
+            if clauses.iter().any(|c| c.occur == '-' && (c.matches)(d)) {
+                continue;
+            }
+            if clauses.iter().any(|c| c.occur == '+' && !(c.matches)(d)) {
+                continue;
+            }
+            let fold = |occur: char| {
+                clauses
+                    .iter()
+                    .filter(|c| c.occur == occur && (c.matches)(d))
+                    .fold(None, |acc: Option<f32>, c| {
+                        Some(acc.map_or(c.weight, |a| a + c.weight))
+                    })
+            };
+            let (must, should) = (fold('+'), fold(' '));
+            let score = match (has_must, has_should, must, should) {
+                (true, _, Some(m), Some(s)) => m + s,
+                (true, _, Some(m), None) => m,
+                (false, true, _, Some(s)) => s,
+                (false, true, _, None) => continue,
+                (false, false, ..) => 1.0,
+                (true, _, None, _) => continue,
+            };
+            expected.push((i, score));
+        }
+        expected.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+        for (start, rows) in [(0, 100), (0, 5), (3, 7), (0, 0), (20, 30)] {
+            let r = SearchRequest {
+                query: q(&query),
+                filters: filter.iter().map(|f| q(f)).collect(),
+                sort: vec![],
+                start,
+                rows,
+            };
+            let res = searcher.search(&r).unwrap();
+            let got: Vec<(String, u32)> = res
+                .docs
+                .iter()
+                .map(|h| (h.doc["id"].as_str().unwrap().to_string(), h.score.to_bits()))
+                .collect();
+            let want: Vec<(String, u32)> = expected
+                .iter()
+                .skip(start)
+                .take(rows)
+                .map(|&(i, s)| (docs[i]["id"].as_str().unwrap().to_string(), s.to_bits()))
+                .collect();
+            assert_eq!(
+                res.num_found,
+                expected.len(),
+                "numFound for {query} fq {filter:?}"
+            );
+            let max = expected.first().map_or(0.0, |e| e.1);
+            assert_eq!(
+                res.max_score.to_bits(),
+                max.to_bits(),
+                "maxScore for {query}"
+            );
+            assert_eq!(got, want, "{query} fq {filter:?} start {start} rows {rows}");
+        }
+    }
+}

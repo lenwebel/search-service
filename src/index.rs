@@ -398,6 +398,7 @@ impl Index {
             segments.push(SegEntry {
                 name: s.name.clone(),
                 seg,
+                live_bits: crate::search::bools_to_bits(&live),
                 live,
             });
         }

@@ -95,6 +95,240 @@ pub(crate) struct SegEntry {
     pub name: String,
     pub seg: Arc<Segment>,
     pub live: Vec<bool>,
+    /// `live` as a bitset, for combining with other bitsets a word at a time.
+    pub live_bits: Vec<u64>,
+}
+
+pub(crate) fn bools_to_bits(v: &[bool]) -> Vec<u64> {
+    let mut bits = vec![0u64; v.len().div_ceil(64)];
+    for (d, _) in v.iter().enumerate().filter(|(_, b)| **b) {
+        set_bit(&mut bits, d as u32);
+    }
+    bits
+}
+
+/// Optional clauses beyond this make the per-combination score table too big;
+/// such queries use the general path.
+const MAX_TIERED_CLAUSES: usize = 12;
+
+/// A boolean query whose clauses all have constant scores (`^=`), the shape
+/// card matching uses, prepared for one segment.
+///
+/// A clause's matching documents don't depend on scoring, so each is a bitset,
+/// cached per segment when it matches enough documents to be worth a slot (broad
+/// clauses like a brand or rarity do). A document's score depends only on which
+/// optional clauses it matches, so it is looked up from a table built once, with
+/// scores added in the same order [`Searcher::eval_bool`] adds them: required
+/// clauses, then optional ones. That keeps them bit-for-bit identical.
+struct ConstantBool {
+    bits: Vec<Arc<Vec<u64>>>,
+    occurs: Vec<Occur>,
+    /// Indexes of the optional clauses, in query order. Bit `i` of a mask means
+    /// `should[i]` matched.
+    should: Vec<usize>,
+    has_must: bool,
+    /// Score for each mask of matched optional clauses. `None` when no document
+    /// can have that mask (without required clauses, one optional must match).
+    scores: Vec<Option<f32>>,
+    n: u32,
+}
+
+impl ConstantBool {
+    fn new(
+        searcher: &Searcher,
+        idf: &Idf,
+        seg: &Segment,
+        clauses: &[(Occur, &Query, f32)],
+    ) -> Option<Self> {
+        let should: Vec<usize> = (0..clauses.len())
+            .filter(|&i| clauses[i].0 == Occur::Should)
+            .collect();
+        if should.len() > MAX_TIERED_CLAUSES {
+            return None;
+        }
+        let n = seg.doc_count();
+        let bits = clauses
+            .iter()
+            .map(|(_, q, _)| {
+                seg.cached_filter_if(
+                    &format!("{q:?}"),
+                    || to_bits(n, &searcher.eval(idf, seg, q)),
+                    // One-off narrow clauses would only push broad ones out.
+                    |b| b.iter().map(|w| w.count_ones() as usize).sum::<usize>() * 64 >= n as usize,
+                )
+            })
+            .collect();
+        let has_must = clauses.iter().any(|c| c.0 == Occur::Must);
+        let has_should = !should.is_empty();
+        let must_sum = clauses
+            .iter()
+            .filter(|c| c.0 == Occur::Must)
+            .fold(None, |acc: Option<f32>, c| {
+                Some(acc.map_or(c.2, |a| a + c.2))
+            });
+        let scores = (0..1usize << should.len())
+            .map(|mask| {
+                let should_sum = should
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask >> i & 1 == 1)
+                    .fold(None, |acc: Option<f32>, (_, &c)| {
+                        Some(acc.map_or(clauses[c].2, |a| a + clauses[c].2))
+                    });
+                match (has_must, has_should, must_sum, should_sum) {
+                    (_, _, Some(m), Some(s)) => Some(m + s),
+                    (_, _, Some(m), None) => Some(m),
+                    (false, true, None, s) => s,
+                    // Purely negative: everything else, scored 1 as in `eval_bool`.
+                    (false, false, None, _) => Some(1.0),
+                    (true, _, None, _) => unreachable!("required clauses have a sum"),
+                }
+            })
+            .collect();
+        Some(ConstantBool {
+            bits,
+            occurs: clauses.iter().map(|c| c.0).collect(),
+            should,
+            has_must,
+            scores,
+            n,
+        })
+    }
+
+    fn words(&self) -> usize {
+        (self.n as usize).div_ceil(64)
+    }
+
+    /// Matching documents in word `w`, before liveness and filters.
+    fn word(&self, w: usize) -> u64 {
+        let (mut must, mut should, mut not) = (!0u64, 0u64, 0u64);
+        for (occur, b) in self.occurs.iter().zip(&self.bits) {
+            match occur {
+                Occur::Must => must &= b[w],
+                Occur::Should => should |= b[w],
+                Occur::MustNot => not |= b[w],
+            }
+        }
+        let word = if self.has_must {
+            must
+        } else if !self.should.is_empty() {
+            should
+        } else {
+            let remaining = self.n as usize - w * 64;
+            if remaining >= 64 {
+                !0
+            } else {
+                (1u64 << remaining) - 1
+            }
+        };
+        word & !not
+    }
+
+    /// Which optional clauses document `bit` of word `w` matched.
+    fn mask(&self, w: usize, bit: u32) -> usize {
+        self.should
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| ((self.bits[c][w] >> bit & 1) as usize) << i)
+            .sum()
+    }
+
+    /// All matching documents with their scores, in document order.
+    fn matches(&self) -> Matches {
+        let mut out = vec![];
+        for w in 0..self.words() {
+            let mut word = self.word(w);
+            while word != 0 {
+                let bit = word.trailing_zeros();
+                word &= word - 1;
+                let score = self.scores[self.mask(w, bit)].expect("a matching mask has a score");
+                out.push(((w * 64) as u32 + bit, score));
+            }
+        }
+        out
+    }
+
+    /// The segment's best `k` live documents passing `filters`, by score then
+    /// document, with the total count and best score.
+    ///
+    /// Documents are taken a score tier at a time, best first, building each
+    /// tier's documents 64 at a time from the clause bitsets, and stopping once
+    /// `k` are found. The count comes from counting bits. So the many documents
+    /// that match only broad, low-weight clauses are never visited one by one
+    /// unless the page reaches down to them.
+    fn top_k(
+        &self,
+        live: &[u64],
+        filters: &[Arc<Vec<u64>>],
+        k: usize,
+    ) -> (usize, Vec<(u32, f32)>, f32) {
+        let words = self.words();
+        let base: Vec<u64> = (0..words)
+            .map(|w| {
+                filters
+                    .iter()
+                    .fold(self.word(w) & live[w], |acc, f| acc & f[w])
+            })
+            .collect();
+        let count: usize = base.iter().map(|w| w.count_ones() as usize).sum();
+        if count == 0 {
+            return (0, vec![], 0.0);
+        }
+        // An optional clause with no matches here rules out every mask using it.
+        let empty: usize = self
+            .should
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| self.bits[**c].iter().all(|w| *w == 0))
+            .map(|(i, _)| 1 << i)
+            .sum();
+        let mut tiers: Vec<(u64, f32, Vec<usize>)> = vec![];
+        for (mask, score) in self.scores.iter().enumerate() {
+            let Some(score) = score else { continue };
+            if mask & empty != 0 {
+                continue;
+            }
+            let key = f64_key(*score as f64);
+            match tiers.iter_mut().find(|t| t.0 == key) {
+                Some(t) => t.2.push(mask),
+                None => tiers.push((key, *score, vec![mask])),
+            }
+        }
+        tiers.sort_by_key(|t| std::cmp::Reverse(t.0));
+        let mut out = Vec::with_capacity(k.min(count));
+        let mut max = None;
+        for (_, score, masks) in &tiers {
+            for (w, &b) in base.iter().enumerate() {
+                if b == 0 {
+                    continue;
+                }
+                let mut tier = 0u64;
+                for &mask in masks {
+                    let mut m = b;
+                    for (i, &c) in self.should.iter().enumerate() {
+                        m &= if mask >> i & 1 == 1 {
+                            self.bits[c][w]
+                        } else {
+                            !self.bits[c][w]
+                        };
+                    }
+                    tier |= m;
+                }
+                if tier != 0 {
+                    max.get_or_insert(*score);
+                }
+                while tier != 0 && out.len() < k {
+                    let bit = tier.trailing_zeros();
+                    tier &= tier - 1;
+                    out.push(((w * 64) as u32 + bit, *score));
+                }
+                if out.len() >= k && max.is_some() {
+                    return (count, out, max.unwrap_or(0.0));
+                }
+            }
+        }
+        (count, out, max.unwrap_or(0.0))
+    }
 }
 
 pub struct Searcher {
@@ -355,6 +589,24 @@ impl Searcher {
         let filter_keys: Vec<String> = req.filters.iter().map(|f| format!("{f:?}")).collect();
         let k = req.start + req.rows;
 
+        // Constant-score boolean queries sorted by score take the tiered path.
+        let tiered: Option<Vec<(Occur, &Query, f32)>> = match &req.query {
+            Query::Bool(clauses)
+                if specs.len() == 1
+                    && specs[0].1 == "score"
+                    && specs[0].2
+                    && !clauses.is_empty() =>
+            {
+                clauses
+                    .iter()
+                    .map(|(occur, q)| match q {
+                        Query::Const(inner, c) => Some((*occur, inner.as_ref(), *c)),
+                        _ => None,
+                    })
+                    .collect()
+            }
+            _ => None,
+        };
         let per_segment_search = |(si, e): (usize, &SegEntry)| {
             let n = e.seg.doc_count();
             let filters: Vec<Arc<Vec<u64>>> = req
@@ -366,6 +618,18 @@ impl Searcher {
                         .cached_filter(key, || to_bits(n, &self.eval(&idf, &e.seg, f)))
                 })
                 .collect();
+            if let Some(clauses) = &tiered {
+                let tiers = ConstantBool::new(self, &idf, &e.seg, clauses);
+                if let Some(cb) = tiers {
+                    let (count, top, max) = cb.top_k(&e.live_bits, &filters, k);
+                    let seg = si as u32;
+                    let cands = top
+                        .into_iter()
+                        .map(|(doc, score)| Cand { score, seg, doc })
+                        .collect();
+                    return (count, cands, max);
+                }
+            }
             let mut m: Matches = match (&req.query, filters.first()) {
                 // Browsing a filtered set: walk the cached bitset directly.
                 (Query::MatchAll, Some(bits)) => iter_bits(bits).map(|d| (d, 1.0)).collect(),
@@ -498,7 +762,22 @@ impl Searcher {
                 m.iter_mut().for_each(|(_, s)| *s = *c);
                 m
             }
-            Query::Bool(clauses) => self.eval_bool(idf, seg, clauses),
+            Query::Bool(clauses) => {
+                let constant: Option<Vec<(Occur, &Query, f32)>> = clauses
+                    .iter()
+                    .map(|(occur, q)| match q {
+                        Query::Const(inner, c) => Some((*occur, inner.as_ref(), *c)),
+                        _ => None,
+                    })
+                    .collect();
+                match constant
+                    .filter(|c| !c.is_empty())
+                    .and_then(|c| ConstantBool::new(self, idf, seg, &c))
+                {
+                    Some(cb) => cb.matches(),
+                    None => self.eval_bool(idf, seg, clauses),
+                }
+            }
         }
     }
 
@@ -803,6 +1082,17 @@ fn keyed_top_k(
     // Max-heap: the top is the worst candidate kept so far.
     let mut heap: BinaryHeap<(SegKey, u32, u32)> = BinaryHeap::with_capacity(k + 1);
     for (doc, score) in matches {
+        // Most candidates lose on the first sort field alone; check that before
+        // building the whole key. Docs arrive in ascending order, so with a
+        // single sort field an equal value loses the tie too.
+        if heap.len() >= k
+            && let Some(top) = heap.peek()
+        {
+            let first = accessors[0].key_part(doc, score, specs[0].2);
+            if first > top.0[0] || (first == top.0[0] && specs.len() == 1) {
+                continue;
+            }
+        }
         let mut key: SegKey = [0; KEYED_SORT_FIELDS];
         for (part, (acc, (_, _, desc))) in key.iter_mut().zip(accessors.iter().zip(specs)) {
             *part = acc.key_part(doc, score, *desc);
