@@ -330,11 +330,11 @@ impl ConstantBool {
                     out.push(((w * 64) as u32 + bit, *score));
                 }
                 if out.len() >= k && max.is_some() {
-                    return (count, out, max.unwrap_or(0.0));
+                    return (count, out, max.unwrap_or(0.0).max(0.0));
                 }
             }
         }
-        (count, out, max.unwrap_or(0.0))
+        (count, out, max.unwrap_or(0.0).max(0.0))
     }
 }
 
@@ -602,7 +602,12 @@ impl Searcher {
         let mut idf = Idf::new();
         self.prepare_idf(&req.query, &mut idf);
         let filter_keys: Vec<String> = req.filters.iter().map(|f| format!("{f:?}")).collect();
-        let k = req.start + req.rows;
+        // No page can hold more documents than the index has, so cap the request:
+        // `rows=1000000000` must not size buffers by what it asks for.
+        let k = req
+            .start
+            .saturating_add(req.rows)
+            .min(self.total_docs as usize);
 
         // Constant-score boolean queries sorted by score take the tiered path.
         let tiered: Option<Vec<(Occur, &Query, f32)>> = match &req.query {
@@ -1095,7 +1100,8 @@ fn keyed_top_k(
 ) -> impl Iterator<Item = (u32, f32)> {
     use std::collections::BinaryHeap;
     // Max-heap: the top is the worst candidate kept so far.
-    let mut heap: BinaryHeap<(SegKey, u32, u32)> = BinaryHeap::with_capacity(k + 1);
+    let mut heap: BinaryHeap<(SegKey, u32, u32)> =
+        BinaryHeap::with_capacity(k.min(matches.len()) + 1);
     for (doc, score) in matches {
         // Most candidates lose on the first sort field alone; check that before
         // building the whole key. Docs arrive in ascending order, so with a

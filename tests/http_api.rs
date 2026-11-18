@@ -224,3 +224,147 @@ async fn sorting_on_a_text_field_suggests_its_sortable_copy() {
         "should suggest the string copy: {msg}"
     );
 }
+
+#[tokio::test]
+async fn huge_start_or_rows_answer_normally() {
+    let app = seeded().await;
+    for params in [
+        "q=*:*&rows=1000000000",
+        "q=pikachu&rows=1000000000&fl=id,score",
+        "q=(name:pikachu)^=5%20OR%20(name:raichu)^=2&rows=1000000000",
+        "q=*:*&sort=name_str%20asc&rows=1000000000",
+        "q=*:*&start=18446744073709551615&rows=18446744073709551615",
+    ] {
+        let (status, body) = call(&app, "GET", &format!("/solr/cards/select?{params}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{params}: {body}");
+        assert!(body["response"]["numFound"].as_u64().is_some(), "{params}");
+    }
+}
+
+#[tokio::test]
+async fn repeated_update_commands_all_apply_in_order() {
+    let app = seeded().await;
+    // Solr's JSON update format allows the same command key more than once.
+    let body = r#"{
+        "add": {"doc": {"id": "10", "name": "Mew"}},
+        "add": {"doc": {"id": "11", "name": "Mewtwo"}},
+        "delete": {"id": "1"},
+        "delete": {"id": "2"},
+        "add": {"doc": {"id": "2", "name": "Pikachu again"}}
+    }"#;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/solr/cards/update")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let (_, found) = call(
+        &app,
+        "GET",
+        "/solr/cards/select?q=*:*&fl=id&rows=10&sort=id%20asc",
+        None,
+    )
+    .await;
+    let ids: Vec<&str> = found["response"]["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["10", "11", "2", "3"]);
+}
+
+#[tokio::test]
+async fn a_query_that_hits_malformed_data_fails_alone_without_killing_the_server() {
+    use futures::TryStreamExt;
+    use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
+    let schema = || {
+        Schema::new("id")
+            .with_field("id", FieldType::Str, false)
+            .with_field("name", FieldType::Text, false)
+            .with_field("name_str", FieldType::Str, false)
+            .with_copy("name", "name_str")
+    };
+    let store = Arc::new(InMemory::new());
+    let writer = Index::new(store.clone(), "cards", schema());
+    writer
+        .commit(search_service::index::Batch::default().add(json!({"id": "1", "name": "Pikachu"})))
+        .await
+        .unwrap();
+
+    // Point name_str's postings past the end of the file, with a valid checksum.
+    let segs: Vec<_> = store
+        .list(Some(&Path::from("cards/segments")))
+        .try_collect()
+        .await
+        .unwrap();
+    let path = &segs[0].location;
+    let mut b = store
+        .get(path)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+    b.truncate(b.len() - 4);
+    let u64_at =
+        |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap()) as usize;
+    let dir = u64_at(&b, 12);
+    let n_fields = u32::from_le_bytes(b[dir + 16..dir + 20].try_into().unwrap());
+    let mut at = dir + 20;
+    let mut postings_slot = None;
+    for _ in 0..n_fields {
+        let len = u16::from_le_bytes(b[at..at + 2].try_into().unwrap()) as usize;
+        let name = std::str::from_utf8(&b[at + 2..at + 2 + len])
+            .unwrap()
+            .to_string();
+        let off = u64_at(&b, at + 3 + len);
+        if name == "name_str" {
+            postings_slot = Some(off + 3 * 8);
+        }
+        at += 11 + len;
+    }
+    let slot = postings_slot.expect("name_str is in the directory");
+    let past_end = (b.len() as u64 * 4).to_le_bytes();
+    b[slot..slot + 8].copy_from_slice(&past_end);
+    let crc = crc32fast::hash(&b);
+    b.extend_from_slice(&crc.to_le_bytes());
+    store.put(path, PutPayload::from(b)).await.unwrap();
+
+    let app = router(Arc::new(AppState {
+        core: "cards".into(),
+        index: Index::new(store.clone() as Arc<dyn ObjectStore>, "cards", schema()),
+    }));
+    let (status, body) = call(&app, "GET", "/solr/cards/select?q=name_str:Pikachu", None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    // The server is still up and answers queries that avoid the bad data.
+    let (status, body) = call(&app, "GET", "/solr/cards/select?q=id:1&fl=id", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["response"]["numFound"], 1);
+}
+
+#[tokio::test]
+async fn a_core_name_cannot_inject_script_into_the_browser_page() {
+    let index = Index::new(
+        Arc::new(InMemory::new()),
+        "cards",
+        Schema::new("id").with_field("id", FieldType::Str, false),
+    );
+    let app = router(Arc::new(AppState {
+        core: "x</script><script>alert(1)</script>".into(),
+        index,
+    }));
+    let res = app
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html =
+        String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert!(
+        !html.contains("<script>alert"),
+        "the core name must stay inside its string"
+    );
+}

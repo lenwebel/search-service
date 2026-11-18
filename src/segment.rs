@@ -80,6 +80,8 @@ pub enum DocError {
     UnknownField(String),
     #[error("invalid value {1} for field '{0}'")]
     BadValue(String, String),
+    #[error("field name of {0} bytes is longer than the {max} allowed", max = u16::MAX)]
+    FieldNameTooLong(usize),
 }
 
 // ---------------------------------------------------------------- building
@@ -139,6 +141,10 @@ impl SegmentBuilder {
                 let mut targets = vec![name.clone()];
                 targets.extend(schema.copy_targets(name));
                 for target in targets {
+                    // The segment directory stores field names with a 16-bit length.
+                    if target.len() > u16::MAX as usize {
+                        return Err(DocError::FieldNameTooLong(target.len()));
+                    }
                     let info = schema
                         .field(&target)
                         .ok_or_else(|| DocError::UnknownField(target.clone()))?;
@@ -491,13 +497,38 @@ pub struct StrTable {
 impl StrTable {
     fn open(b: &Bytes, at: usize) -> StrTable {
         let count = b.u32(at);
-        let ends = at + 4;
+        // Saturating, so a bad offset can't wrap into range; `validate` then
+        // rejects the table.
+        let ends = at.saturating_add(4);
         StrTable {
             b: b.clone(),
             count,
             ends,
-            data: ends + 4 * (count as usize + 1),
+            data: ends.saturating_add(4usize.saturating_mul(count as usize + 1)),
         }
+    }
+
+    /// Checks every entry lies inside the file, in order, and is valid UTF-8,
+    /// which is what makes `get`'s unchecked conversion sound.
+    fn validate(&self) -> Result<(), String> {
+        let len = self.b.0.len();
+        if self.data > len {
+            return Err("string table runs past the end of the file".into());
+        }
+        let end_at = |i: usize| self.b.u32(self.ends + 4 * i) as usize;
+        let mut prev = 0;
+        for i in 0..=self.count as usize {
+            let e = end_at(i);
+            if e < prev || self.data + e > len {
+                return Err("string table entry out of range".into());
+            }
+            if i > 0 {
+                std::str::from_utf8(&self.b.0[self.data + prev..self.data + e])
+                    .map_err(|_| "string table entry is not UTF-8".to_string())?;
+            }
+            prev = e;
+        }
+        Ok(())
     }
 
     pub fn len(&self) -> u32 {
@@ -512,8 +543,8 @@ impl StrTable {
     pub fn get(&self, i: u32) -> &str {
         let s = self.b.u32(self.ends + 4 * i as usize) as usize;
         let e = self.b.u32(self.ends + 4 * (i as usize + 1)) as usize;
-        // SAFETY: table bytes were written from `&str` values, and the whole
-        // file passed its CRC32 check before it was cached and mapped.
+        // SAFETY: `Segment::open` ran `validate` on every table, which checked
+        // each entry is in range and valid UTF-8, and segments never change.
         unsafe { std::str::from_utf8_unchecked(&self.b.0[self.data + s..self.data + e]) }
     }
 
@@ -730,20 +761,48 @@ pub struct Segment {
 
 impl Segment {
     /// Opens verified segment bytes. Call [`verify`] first on untrusted input.
+    /// Opens a segment, rejecting one whose structure is out of range or whose
+    /// text isn't UTF-8. Checksums catch accidental damage; this catches a
+    /// segment that was written wrongly but checksummed correctly.
     pub fn open(backing: Backing) -> Result<Segment, String> {
         if backing.len() < 24 || &backing[..4] != MAGIC {
             return Err("not a segment file".into());
         }
         let b = Bytes(Arc::new(backing));
+        let seg = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::read(b)))
+            .map_err(|_| "malformed segment".to_string())??;
+        seg.ids.validate()?;
+        for field in seg.fields.values() {
+            match field {
+                FieldReader::Text(t) => t.terms.validate()?,
+                FieldReader::Str(f) => f.terms.validate()?,
+                FieldReader::Num(_) => {}
+            }
+        }
+        Ok(seg)
+    }
+
+    fn read(b: Bytes) -> Result<Segment, String> {
+        let len = b.0.len();
+        let in_range = |at: usize, n: usize| at.checked_add(n).is_some_and(|end| end <= len);
         let doc_count = b.u32(8);
         let dir = b.usize(12);
+        if !in_range(dir, 20) {
+            return Err("segment directory out of range".into());
+        }
         let ids = StrTable::open(&b, b.usize(dir));
         let stored = b.usize(dir + 8);
         let n_fields = b.u32(dir + 16);
         let mut at = dir + 20;
         let mut fields = HashMap::new();
         for _ in 0..n_fields {
+            if !in_range(at, 2) {
+                return Err("segment directory out of range".into());
+            }
             let len = u16::from_le_bytes(b.0[at..at + 2].try_into().unwrap()) as usize;
+            if !in_range(at, 11 + len) {
+                return Err("segment directory out of range".into());
+            }
             let name = std::str::from_utf8(&b.0[at + 2..at + 2 + len])
                 .map_err(|e| e.to_string())?
                 .to_string();

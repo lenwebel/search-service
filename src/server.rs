@@ -40,7 +40,11 @@ pub fn router(state: Arc<AppState>) -> Router {
 const BROWSER_PAGE: &str = include_str!("../ui/index.html");
 
 async fn browser(State(state): State<Arc<AppState>>) -> Html<String> {
-    let core = Value::String(state.core.clone()).to_string();
+    // A JSON string is a valid JavaScript string, but `</script>` inside it
+    // would still end the script element; `\u003c` keeps it inert.
+    let core = Value::String(state.core.clone())
+        .to_string()
+        .replace('<', "\\u003c");
     Html(BROWSER_PAGE.replace("\"{{CORE}}\"", &core))
 }
 
@@ -209,13 +213,25 @@ async fn select(
     let pending = Pending::enter();
     rayon::spawn(move || {
         let _pending = pending;
+        // A panic in a spawned rayon task would abort the whole process, so a
+        // query that trips over a malformed segment fails on its own instead.
         let wanted: Vec<&str> = stored_fl.iter().map(String::as_str).collect();
         let wanted = (!all_stored).then_some(wanted.as_slice());
-        let _ = tx.send(searcher.search_fields(&request, wanted));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            searcher.search_fields(&request, wanted)
+        }));
+        let _ = tx.send(result);
     });
+    let failed = || {
+        SolrError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "search failed: malformed index data".into(),
+        )
+    };
     let result = rx
         .await
-        .map_err(|_| SolrError(StatusCode::INTERNAL_SERVER_ERROR, "search panicked".into()))?
+        .map_err(|_| failed())?
+        .map_err(|_| failed())?
         .map_err(bad_request)?;
 
     let all_fields = all_stored;
@@ -277,6 +293,32 @@ fn add_add(batch: &mut Batch, v: &Value) -> Result<(), SolrError> {
 
 const COMMANDS: &[&str] = &["add", "delete", "commit", "optimize"];
 
+/// A JSON object's entries in document order, keeping repeated keys.
+struct Entries(Vec<(String, Value)>);
+
+impl<'de> serde::Deserialize<'de> for Entries {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Entries;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Entries, A::Error> {
+                let mut entries = vec![];
+                while let Some(entry) = map.next_entry::<String, Value>()? {
+                    entries.push(entry);
+                }
+                Ok(Entries(entries))
+            }
+        }
+        d.deserialize_map(Visit)
+    }
+}
+
 async fn update(
     State(state): State<Arc<AppState>>,
     Path(core): Path<String>,
@@ -284,10 +326,11 @@ async fn update(
 ) -> Result<Json<Value>, SolrError> {
     let started = Instant::now();
     check_core(&state, &core)?;
-    let body: Value = if body.is_empty() {
+    let raw = body;
+    let body: Value = if raw.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&body).map_err(bad_request)?
+        serde_json::from_slice(&raw).map_err(bad_request)?
     };
     let mut batch = Batch::default();
     match &body {
@@ -301,8 +344,10 @@ async fn update(
             }
         }
         Value::Object(o) if o.keys().any(|k| COMMANDS.contains(&k.as_str())) => {
-            // Commands apply in document order (serde_json preserves it).
-            for (cmd, v) in o {
+            // Commands apply in document order, and a command can repeat ("add"
+            // twice), which a JSON map would collapse to its last value.
+            let Entries(entries) = serde_json::from_slice(&raw).map_err(bad_request)?;
+            for (cmd, v) in &entries {
                 match cmd.as_str() {
                     "add" => add_add(&mut batch, v)?,
                     "delete" => add_delete(&mut batch, v)?,

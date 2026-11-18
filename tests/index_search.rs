@@ -944,3 +944,144 @@ async fn constant_score_booleans_match_a_reference_exactly() {
         }
     }
 }
+
+#[tokio::test]
+async fn an_overlong_field_name_is_rejected_and_the_index_stays_readable() {
+    let schema = schema().with_dynamic("*_s", FieldType::Str, false);
+    let index = Index::new(Arc::new(InMemory::new()), "cards", schema);
+    let mut b = Batch::default();
+    b.push_add(json!({"id": "ok", "name": "Pikachu"}));
+    index.commit(b).await.unwrap();
+
+    let long_name = format!("{}_s", "x".repeat(70_000));
+    let mut doc = serde_json::Map::new();
+    doc.insert("id".into(), json!("bad"));
+    doc.insert(long_name, json!("value"));
+    let mut b = Batch::default();
+    b.push_add(serde_json::Value::Object(doc));
+    assert!(
+        index.commit(b).await.is_err(),
+        "a field name over 65,535 bytes must be refused"
+    );
+
+    let searcher = index
+        .searcher()
+        .await
+        .expect("the index must stay readable");
+    assert_eq!(searcher.search(&req("pikachu")).unwrap().num_found, 1);
+}
+
+/// Rewrites the store's only segment with `damage` applied, then recomputes its
+/// checksum, so the damage passes checksum verification. This models a buggy
+/// or malicious writer rather than bit rot.
+async fn rewrite_segment(store: &Arc<InMemory>, damage: impl FnOnce(&mut Vec<u8>)) {
+    use futures::TryStreamExt;
+    use object_store::{ObjectStoreExt, PutPayload, path::Path};
+    let segs: Vec<_> = store
+        .list(Some(&Path::from("cards/segments")))
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(segs.len(), 1);
+    let path = &segs[0].location;
+    let mut bytes = store
+        .get(path)
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+    let body_len = bytes.len() - 4;
+    bytes.truncate(body_len);
+    damage(&mut bytes);
+    let crc = crc32fast::hash(&bytes);
+    bytes.extend_from_slice(&crc.to_le_bytes());
+    store.put(path, PutPayload::from(bytes)).await.unwrap();
+}
+
+async fn one_doc_store() -> Arc<InMemory> {
+    let store = Arc::new(InMemory::new());
+    let index = Index::new(store.clone(), "cards", schema());
+    let mut b = Batch::default();
+    b.push_add(json!({"id": "only-doc-id", "name": "Pikachu"}));
+    index.commit(b).await.unwrap();
+    store
+}
+
+#[tokio::test]
+async fn a_segment_with_an_out_of_range_directory_is_rejected_not_a_panic() {
+    let store = one_doc_store().await;
+    rewrite_segment(&store, |b| {
+        b[12..20].copy_from_slice(&u64::MAX.to_le_bytes())
+    })
+    .await;
+    let fresh = Index::new(store.clone(), "cards", schema());
+    let result = tokio::spawn(async move { fresh.searcher().await.map(|_| ()) }).await;
+    let err = result.expect("opening a malformed segment must not panic");
+    assert!(err.is_err(), "a malformed segment must be refused");
+}
+
+#[tokio::test]
+async fn a_segment_with_invalid_utf8_text_is_rejected() {
+    let store = one_doc_store().await;
+    rewrite_segment(&store, |b| {
+        let needle = b"only-doc-id";
+        let mut found = 0;
+        for i in 0..b.len() - needle.len() {
+            if &b[i..i + needle.len()] == needle {
+                b[i] = 0xFF;
+                found += 1;
+            }
+        }
+        assert!(found > 0, "the id is stored as plain text in the id table");
+    })
+    .await;
+    let fresh = Index::new(store.clone(), "cards", schema());
+    let result = tokio::spawn(async move { fresh.searcher().await.map(|_| ()) }).await;
+    let err = result.expect("must not panic");
+    assert!(
+        err.is_err(),
+        "text that isn't UTF-8 must be refused, not read unchecked"
+    );
+}
+
+#[tokio::test]
+async fn a_damaged_segment_in_the_local_cache_is_replaced_from_the_store() {
+    let store = Arc::new(InMemory::new());
+    let cache = tempfile::tempdir().unwrap();
+    let first = Index::with_cache_dir(store.clone(), "cards", schema(), cache.path().to_path_buf());
+    let mut b = Batch::default();
+    b.push_add(json!({"id": "only-doc-id", "name": "Pikachu"}));
+    first.commit(b).await.unwrap();
+    first.searcher().await.unwrap();
+    // Damage the cached copy's id text; the copy in the store is still good.
+    let cached: Vec<_> = std::fs::read_dir(cache.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "seg"))
+        .collect();
+    assert_eq!(cached.len(), 1, "one segment is cached");
+    let mut bytes = std::fs::read(&cached[0]).unwrap();
+    let needle = b"only-doc-id";
+    let at = bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .unwrap();
+    bytes[at] = b'x';
+    std::fs::write(&cached[0], bytes).unwrap();
+
+    let reopened =
+        Index::with_cache_dir(store.clone(), "cards", schema(), cache.path().to_path_buf());
+    let searcher = reopened
+        .searcher()
+        .await
+        .expect("the store's good copy is used");
+    let res = searcher
+        .search_fields(&req("pikachu"), Some(&["id"]))
+        .unwrap();
+    assert_eq!(
+        res.docs[0].doc["id"], "only-doc-id",
+        "never serve the damaged cache file"
+    );
+}

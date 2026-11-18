@@ -307,6 +307,15 @@ impl Index {
             return Ok(seg.clone());
         }
         let local = self.cache_dir.join(name);
+        // A cached copy is only trusted if it still passes its checksum; a
+        // damaged one is discarded and fetched again from the store.
+        if tokio::fs::try_exists(&local).await? {
+            let cached = tokio::fs::read(&local).await?;
+            if verify(&cached).is_err() {
+                eprintln!("discarding damaged cached segment {}", local.display());
+                tokio::fs::remove_file(&local).await?;
+            }
+        }
         if !tokio::fs::try_exists(&local).await? {
             let path = self.path("segments", name);
             let bytes = self.store.get(&path).await?.bytes().await?;
@@ -355,8 +364,11 @@ impl Index {
     pub async fn searcher(&self) -> Result<Arc<Searcher>, IndexError> {
         let manifest = self.latest_manifest().await?;
         let prev = self.current.lock().unwrap().clone();
+        // A concurrent refresh may already have installed this generation or a
+        // newer one. Building from it would apply its newer deletes to this
+        // older manifest, so reuse it instead.
         if let Some(p) = &prev
-            && p.generation() == manifest.generation
+            && p.generation() >= manifest.generation
         {
             return Ok(p.clone());
         }
