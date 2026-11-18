@@ -205,3 +205,22 @@ async fn root_serves_the_browser_page() {
         "page should query the select endpoint"
     );
 }
+
+#[tokio::test]
+async fn sorting_on_a_text_field_suggests_its_sortable_copy() {
+    let app = seeded().await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/solr/cards/select?q=*:*&sort=name%20asc",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let msg = body["error"]["msg"].as_str().unwrap();
+    assert!(msg.contains("'name'"), "{msg}");
+    assert!(
+        msg.contains("name_str"),
+        "should suggest the string copy: {msg}"
+    );
+}

@@ -56,8 +56,15 @@ pub struct SearchResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
-    #[error("can not sort on field '{0}': only string, numeric and date fields are sortable")]
-    BadSort(String),
+    #[error(
+        "can not sort on field '{field}': only string, numeric and date fields are sortable{}",
+        sortable_copy.as_ref().map_or(String::new(), |c| format!("; sort on '{c}', its string copy, instead"))
+    )]
+    BadSort {
+        field: String,
+        /// A string field the schema copies this one into, if any.
+        sortable_copy: Option<String>,
+    },
 }
 
 /// Matching documents in one segment, sorted by doc number, with scores.
@@ -552,7 +559,15 @@ impl Searcher {
                     FieldType::Str | FieldType::Long | FieldType::Double | FieldType::Date
                 )
             {
-                return Err(SearchError::BadSort(s.field.clone()));
+                let sortable_copy = self
+                    .schema
+                    .copy_targets(&s.field)
+                    .into_iter()
+                    .find(|t| self.ty(t) == FieldType::Str);
+                return Err(SearchError::BadSort {
+                    field: s.field.clone(),
+                    sortable_copy,
+                });
             }
             specs.push((ty, s.field.as_str(), s.descending));
         }
