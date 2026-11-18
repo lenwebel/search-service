@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store browser</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #fff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #e3e2dd; --accent: #2f6fdb; --accent-text: #fff; --err: #b3261e;
+    --code: #f0efea; --hover: #f2f5fc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #1f1f1d; --text: #ecebe6; --muted: #9a9993;
+      --line: #33332f; --accent: #6b9cf0; --accent-text: #0d0d0c; --err: #f2867d;
+      --code: #262624; --hover: #232a36;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .stat { color: var(--muted); }
+  header .stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+  main { padding: 16px 20px; max-width: 1400px; }
+  form {
+    display: grid; gap: 10px; grid-template-columns: 1fr 1fr;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+  }
+  form .wide { grid-column: 1 / -1; }
+  label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+  input, textarea, select {
+    font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; width: 100%;
+  }
+  textarea { resize: vertical; min-height: 34px; }
+  .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .row label { flex: 1 1 120px; }
+  button {
+    font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .4; cursor: default; }
+  #status { margin: 14px 0 8px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  #status b { color: var(--text); font-variant-numeric: tabular-nums; }
+  #status .pager { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .error {
+    color: var(--err); border: 1px solid var(--err); border-radius: 6px; padding: 8px 12px;
+    font-family: ui-monospace, monospace; white-space: pre-wrap; margin: 12px 0;
+  }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  tbody tr.doc { cursor: pointer; }
+  tbody tr.doc:hover { background: var(--hover); }
+  tr.detail td { white-space: normal; max-width: none; background: var(--code); }
+  pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .examples { font-size: 12px; color: var(--muted); }
+  .examples a { color: var(--accent); cursor: pointer; margin-right: 10px; text-decoration: none; }
+  @media (max-width: 700px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    form { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Store browser</h1>
+  <span class="stat">core <b id="core"></b></span>
+  <span class="stat">documents <b id="total">…</b></span>
+</header>
+<main>
+  <form id="search">
+    <label class="wide">q (Lucene syntax)
+      <input name="q" value="*:*" autocomplete="off" spellcheck="false">
+    </label>
+    <label>fq (one filter per line)
+      <textarea name="fq" rows="2" spellcheck="false"></textarea>
+    </label>
+    <label>fl (blank for all stored fields)
+      <input name="fl" placeholder="id,name,score" spellcheck="false">
+    </label>
+    <div class="row wide">
+      <label>sort <input name="sort" placeholder="score desc" spellcheck="false"></label>
+      <label>df <input name="df" value="search_all" spellcheck="false"></label>
+      <label>q.op
+        <select name="op"><option>OR</option><option>AND</option></select>
+      </label>
+      <label>rows <input name="rows" type="number" min="1" max="1000" value="20"></label>
+      <button class="primary" type="submit">Search</button>
+    </div>
+    <div class="examples wide" id="examples">Try:</div>
+  </form>
+
+  <div id="error" class="error" hidden></div>
+  <div id="status" hidden>
+    <span><b id="found">0</b> found</span>
+    <span>QTime <b id="qtime">0</b> ms</span>
+    <span>round trip <b id="rtt">0</b> ms</span>
+    <span class="pager">
+      <button id="prev" type="button">Prev</button>
+      <span id="page" class="muted"></span>
+      <button id="next" type="button">Next</button>
+    </span>
+  </div>
+  <div class="table-wrap" id="results-wrap" hidden>
+    <table><thead id="head"></thead><tbody id="body"></tbody></table>
+  </div>
+</main>
+
+<script>
+// The server fills in the core name when it serves this page.
+const CORE = "{{CORE}}";
+const SELECT = `/solr/${encodeURIComponent(CORE)}/select`;
+const MAX_COLUMNS = 8;
+const EXAMPLES = ["*:*", "pikachu", '"charizard ex"', "name:char*", "hitpoints:[100 TO *]"];
+
+const form = document.getElementById("search");
+const $ = (id) => document.getElementById(id);
+let start = 0;
+
+$("core").textContent = CORE;
+
+for (const ex of EXAMPLES) {
+  const a = document.createElement("a");
+  a.textContent = ex;
+  a.onclick = () => { form.q.value = ex; start = 0; run(); };
+  $("examples").append(a);
+}
+
+function params() {
+  const p = new URLSearchParams();
+  p.set("q", form.q.value || "*:*");
+  for (const f of form.fq.value.split("\n").map((s) => s.trim()).filter(Boolean)) p.append("fq", f);
+  if (form.fl.value.trim()) p.set("fl", form.fl.value.trim());
+  if (form.sort.value.trim()) p.set("sort", form.sort.value.trim());
+  if (form.df.value.trim()) p.set("df", form.df.value.trim());
+  p.set("q.op", form.op.value);
+  p.set("rows", String(rows()));
+  p.set("start", String(start));
+  return p;
+}
+
+function rows() {
+  return Math.max(1, Math.min(1000, parseInt(form.rows.value, 10) || 20));
+}
+
+async function select(p) {
+  const res = await fetch(`${SELECT}?${p}`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body || body.error) {
+    throw new Error(body?.error?.msg ?? `HTTP ${res.status}`);
+  }
+  return body;
+}
+
+async function run() {
+  const p = params();
+  // Keep the search in the address bar so it can be bookmarked or shared.
+  history.replaceState(null, "", `#${p}`);
+  const t0 = performance.now();
+  try {
+    const body = await select(p);
+    $("error").hidden = true;
+    render(body, Math.round(performance.now() - t0));
+  } catch (e) {
+    $("error").textContent = e.message;
+    $("error").hidden = false;
+    $("status").hidden = true;
+    $("results-wrap").hidden = true;
+  }
+}
+
+function render(body, rtt) {
+  const { numFound, docs } = body.response;
+  $("found").textContent = numFound.toLocaleString();
+  $("qtime").textContent = body.responseHeader.QTime;
+  $("rtt").textContent = rtt;
+  const pages = Math.max(1, Math.ceil(numFound / rows()));
+  $("page").textContent = `page ${Math.floor(start / rows()) + 1} of ${pages.toLocaleString()}`;
+  $("prev").disabled = start === 0;
+  $("next").disabled = start + rows() >= numFound;
+  $("status").hidden = false;
+
+  // Columns: the fl order when one is given; otherwise the unique key first,
+  // then the most common fields in this page.
+  const counts = new Map();
+  for (const d of docs) for (const k of Object.keys(d)) counts.set(k, (counts.get(k) ?? 0) + 1);
+  const fl = form.fl.value.split(/[,\s]+/).filter((f) => f && f !== "*");
+  const cols = fl.length
+    ? fl
+    : [...counts.keys()]
+        .sort((a, b) => (a === "id" ? -1 : b === "id" ? 1 : counts.get(b) - counts.get(a)))
+        .slice(0, MAX_COLUMNS);
+
+  const head = document.createElement("tr");
+  for (const c of ["#", ...cols]) {
+    const th = document.createElement("th");
+    th.textContent = c;
+    head.append(th);
+  }
+  $("head").replaceChildren(head);
+
+  const rowsOut = [];
+  docs.forEach((d, i) => {
+    const tr = document.createElement("tr");
+    tr.className = "doc";
+    tr.title = "Click to show the whole document";
+    const n = document.createElement("td");
+    n.className = "num muted";
+    n.textContent = start + i + 1;
+    tr.append(n);
+    for (const c of cols) {
+      const td = document.createElement("td");
+      const v = d[c];
+      td.textContent = v === undefined ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      if (typeof v === "number") td.className = "num";
+      tr.append(td);
+    }
+    tr.onclick = () => toggle(tr, d, cols.length + 1);
+    rowsOut.push(tr);
+  });
+  if (!docs.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = cols.length + 1 || 1;
+    td.className = "muted";
+    td.textContent = "No documents match.";
+    tr.append(td);
+    rowsOut.push(tr);
+  }
+  $("body").replaceChildren(...rowsOut);
+  $("results-wrap").hidden = false;
+}
+
+function toggle(tr, doc, span) {
+  const next = tr.nextElementSibling;
+  if (next?.classList.contains("detail")) return next.remove();
+  const detail = document.createElement("tr");
+  detail.className = "detail";
+  const td = document.createElement("td");
+  td.colSpan = span;
+  const pre = document.createElement("pre");
+  pre.textContent = JSON.stringify(doc, null, 2);
+  td.append(pre);
+  detail.append(td);
+  tr.after(detail);
+}
+
+function restore() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (!p.has("q")) return;
+  form.q.value = p.get("q");
+  form.fq.value = p.getAll("fq").join("\n");
+  form.fl.value = p.get("fl") ?? "";
+  form.sort.value = p.get("sort") ?? "";
+  form.df.value = p.get("df") ?? "search_all";
+  form.op.value = p.get("q.op") === "AND" ? "AND" : "OR";
+  form.rows.value = p.get("rows") ?? "20";
+  start = parseInt(p.get("start") ?? "0", 10) || 0;
+}
+
+form.onsubmit = (e) => { e.preventDefault(); start = 0; run(); };
+$("prev").onclick = () => { start = Math.max(0, start - rows()); run(); };
+$("next").onclick = () => { start += rows(); run(); };
+
+select(new URLSearchParams({ q: "*:*", rows: "0" }))
+  .then((b) => { $("total").textContent = b.response.numFound.toLocaleString(); })
+  .catch(() => { $("total").textContent = "?"; });
+
+restore();
+run();
+</script>
+</body>
+</html>

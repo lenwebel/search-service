@@ -1,0 +1,775 @@
+{
+    "responseHeader": {
+        "status": 0,
+        "QTime": 14
+    },
+    "fields": [
+        {
+            "name": "Code",
+            "type": "text_general"
+        },
+        {
+            "name": "Icon1",
+            "type": "text_general"
+        },
+        {
+            "name": "Icon2",
+            "type": "text_general"
+        },
+        {
+            "name": "Pokemon",
+            "type": "text_general"
+        },
+        {
+            "name": "_attachments",
+            "type": "text_general"
+        },
+        {
+            "name": "_etag",
+            "type": "text_general"
+        },
+        {
+            "name": "_lsn",
+            "type": "plongs"
+        },
+        {
+            "name": "_nest_path_",
+            "type": "_nest_path_"
+        },
+        {
+            "name": "_rid",
+            "type": "text_general"
+        },
+        {
+            "name": "_root_",
+            "type": "string",
+            "indexed": true,
+            "docValues": false,
+            "stored": false
+        },
+        {
+            "name": "_self",
+            "type": "text_general"
+        },
+        {
+            "name": "_text_",
+            "type": "text_general",
+            "multiValued": true,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "_ts",
+            "type": "plongs"
+        },
+        {
+            "name": "_version_",
+            "type": "plong",
+            "indexed": false,
+            "stored": false
+        },
+        {
+            "name": "abilityDescription1",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "abilityDescription1_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "abilityDescription2",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "abilityDescription2_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "abilityDescription3",
+            "type": "text_general"
+        },
+        {
+            "name": "abilityDescription3_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "abilityDescription4",
+            "type": "text_general"
+        },
+        {
+            "name": "abilityDescription4_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "abilityName1",
+            "type": "text_general"
+        },
+        {
+            "name": "abilityName2",
+            "type": "text_general"
+        },
+        {
+            "name": "abilityName3",
+            "type": "text_general"
+        },
+        {
+            "name": "abilityName4",
+            "type": "text_general"
+        },
+        {
+            "name": "brand",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardId",
+            "type": "text_general",
+            "docValues": false,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo2",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo3",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo4",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo5",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo6",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo7",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardInfo8",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardNumberValue",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardNumberValue2",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "cardNumberValue2_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "cardNumberValue_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "cardType",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "cardType_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "delete",
+            "type": "text_general"
+        },
+        {
+            "name": "elementType",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "elementType2",
+            "type": "text_general"
+        },
+        {
+            "name": "elementType_2",
+            "type": "text_general"
+        },
+        {
+            "name": "elementType_2_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "elementType_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "evolutionStage",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "evolutionStage_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "footer",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "footer2",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "heading",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "hitPoints",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "hitpoints",
+            "type": "plongs",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "hitpoints_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "id",
+            "type": "string",
+            "uninvertible": true,
+            "indexed": true,
+            "required": true,
+            "stored": true
+        },
+        {
+            "name": "illustrator",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "illustrator_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "imageSrc",
+            "type": "text_general"
+        },
+        {
+            "name": "imageSrc_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "imageUrl",
+            "type": "text_general"
+        },
+        {
+            "name": "language",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "name",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "name_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "number",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "number_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "old_cardId",
+            "type": "plongs"
+        },
+        {
+            "name": "pokemoStyle",
+            "type": "text_general"
+        },
+        {
+            "name": "pokemoTag",
+            "type": "text_general"
+        },
+        {
+            "name": "pokemon",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "pokemonStyle",
+            "type": "text_general"
+        },
+        {
+            "name": "pokemonStyle_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "pokemonTag",
+            "type": "text_general"
+        },
+        {
+            "name": "pokemonTag2",
+            "type": "text_general"
+        },
+        {
+            "name": "pokemonTag2_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "pokemonTag_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "pokemon_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "productId",
+            "type": "text_general"
+        },
+        {
+            "name": "productKey",
+            "type": "text_general",
+            "docValues": false,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "productKey_1",
+            "type": "text_general"
+        },
+        {
+            "name": "productType",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "rarity",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "rarity_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "releaseDate",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "releaseDate_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "resistAmount",
+            "type": "plongs",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "resistAmount_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "resistType",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "resistType_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "reverseTag",
+            "type": "text_general"
+        },
+        {
+            "name": "sealedType",
+            "type": "text_general"
+        },
+        {
+            "name": "search_all",
+            "type": "text_general",
+            "uninvertible": true,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "series",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "series_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "set",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "setCode",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "setCode1",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "setCode1_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "setCode2",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "setCode2_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "setCode3",
+            "type": "text_general"
+        },
+        {
+            "name": "setCode3_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "setCode4",
+            "type": "text_general"
+        },
+        {
+            "name": "setCode4_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "setCode_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "setId",
+            "type": "text_general"
+        },
+        {
+            "name": "set_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "string",
+            "type": "text_general",
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "subHeading",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "subHeading2",
+            "type": "text_general"
+        },
+        {
+            "name": "subRarity",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "subRarity_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "subTypeName",
+            "type": "text_general"
+        },
+        {
+            "name": "title",
+            "type": "text_general",
+            "uninvertible": true,
+            "multiValued": false,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "ts",
+            "type": "plong",
+            "uninvertible": true,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "ts_str",
+            "type": "string",
+            "uninvertible": true,
+            "indexed": true,
+            "stored": true
+        },
+        {
+            "name": "weaknessAmount",
+            "type": "plongs",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "weaknessAmount_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "weaknessType",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "weaknessType_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "webScraperOrder",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "webScraperOrder_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        },
+        {
+            "name": "webScraperStartUrl",
+            "type": "text_general",
+            "multiValued": false,
+            "stored": true
+        },
+        {
+            "name": "webScraperStartUrl_str",
+            "type": "string",
+            "multiValued": false,
+            "indexed": true,
+            "stored": false
+        }
+    ]
+}
